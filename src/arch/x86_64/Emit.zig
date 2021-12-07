@@ -608,7 +608,6 @@ fn mirArith(emit: *Emit, tag: Mir.Inst.Tag, inst: Mir.Inst.Index) InnerError!voi
         0b00 => blk: {
             if (ops.reg2 == .none) {
                 // OP reg1, imm32
-                // OP r/m64, imm32
                 const imm = emit.mir.instructions.items(.data)[inst].imm;
                 const opcode = getArithOpCode(tag, .mi);
                 const encoder = try Encoder.init(emit.code, 7);
@@ -627,8 +626,7 @@ fn mirArith(emit: *Emit, tag: Mir.Inst.Tag, inst: Mir.Inst.Index) InnerError!voi
                 }
                 break :blk;
             }
-            // OP reg1, reg2
-            // OP r/m64, r64
+            // OP reg2, reg1
             const opcode = getArithOpCode(tag, .mr);
             const opc = if (ops.reg1.size() == 8) opcode.opc - 1 else opcode.opc;
             const encoder = try Encoder.init(emit.code, 3);
@@ -646,7 +644,6 @@ fn mirArith(emit: *Emit, tag: Mir.Inst.Tag, inst: Mir.Inst.Index) InnerError!voi
             const opc = if (ops.reg1.size() == 8) opcode.opc - 1 else opcode.opc;
             if (ops.reg2 == .none) {
                 // OP reg1, [imm32]
-                // OP r64, r/m64
                 const encoder = try Encoder.init(emit.code, 8);
                 encoder.rex(.{
                     .w = ops.reg1.size() == 64,
@@ -658,8 +655,7 @@ fn mirArith(emit: *Emit, tag: Mir.Inst.Tag, inst: Mir.Inst.Index) InnerError!voi
                 encoder.disp32(imm);
                 break :blk;
             }
-            // OP reg1, [reg2 + imm32]
-            // OP r64, r/m64
+            // OP reg2, [reg1 + imm32]
             const encoder = try Encoder.init(emit.code, 7);
             encoder.rex(.{
                 .w = ops.reg1.size() == 64,
@@ -678,7 +674,6 @@ fn mirArith(emit: *Emit, tag: Mir.Inst.Tag, inst: Mir.Inst.Index) InnerError!voi
         0b10 => blk: {
             if (ops.reg2 == .none) {
                 // OP [reg1 + 0], imm32
-                // OP r/m64, imm32
                 const imm = emit.mir.instructions.items(.data)[inst].imm;
                 const opcode = getArithOpCode(tag, .mi);
                 const opc = if (ops.reg1.size() == 8) opcode.opc - 1 else opcode.opc;
@@ -698,8 +693,7 @@ fn mirArith(emit: *Emit, tag: Mir.Inst.Tag, inst: Mir.Inst.Index) InnerError!voi
                 }
                 break :blk;
             }
-            // OP [reg1 + imm32], reg2
-            // OP r/m64, r64
+            // OP [reg2 + imm32], reg1
             const imm = emit.mir.instructions.items(.data)[inst].imm;
             const opcode = getArithOpCode(tag, .mr);
             const opc = if (ops.reg1.size() == 8) opcode.opc - 1 else opcode.opc;
@@ -721,7 +715,6 @@ fn mirArith(emit: *Emit, tag: Mir.Inst.Tag, inst: Mir.Inst.Index) InnerError!voi
         0b11 => blk: {
             if (ops.reg2 == .none) {
                 // OP [reg1 + imm32], imm32
-                // OP r/m64, imm32
                 const payload = emit.mir.instructions.items(.data)[inst].payload;
                 const imm_pair = emit.mir.extraData(Mir.ImmPair, payload).data;
                 const opcode = getArithOpCode(tag, .mi);
@@ -761,7 +754,7 @@ fn mirArith(emit: *Emit, tag: Mir.Inst.Tag, inst: Mir.Inst.Index) InnerError!voi
 fn mirArithScaleSrc(emit: *Emit, tag: Mir.Inst.Tag, inst: Mir.Inst.Index) InnerError!void {
     const ops = Mir.Ops.decode(emit.mir.instructions.items(.ops)[inst]);
     const scale = ops.flags;
-    // OP reg1, [reg2 + scale*rcx + imm32]
+    // OP reg2, [reg1+ scale*rcx + imm32]
     const opcode = getArithOpCode(tag, .rm);
     const opc = if (ops.reg1.size() == 8) opcode.opc - 1 else opcode.opc;
     const imm = emit.mir.instructions.items(.data)[inst].imm;
@@ -810,7 +803,7 @@ fn mirArithScaleDst(emit: *Emit, tag: Mir.Inst.Tag, inst: Mir.Inst.Index) InnerE
         return;
     }
 
-    // OP [reg1 + scale*rax + imm32], reg2
+    // OP [reg2 + scale*rax + imm32], reg1
     const opcode = getArithOpCode(tag, .mr);
     const opc = if (ops.reg1.size() == 8) opcode.opc - 1 else opcode.opc;
     const encoder = try Encoder.init(emit.code, 8);

@@ -372,7 +372,6 @@ fn gen(self: *Self) InnerError!void {
         // push the callee_preserved_regs that were used
         const backpatch_push_callee_preserved_regs_i = try self.addInst(.{
             .tag = .push_regs_from_callee_preserved_regs,
-            .ops = undefined,
             .data = .{ .regs_to_push_or_pop = undefined }, // to be backpatched
         });
 
@@ -381,7 +380,6 @@ fn gen(self: *Self) InnerError!void {
             .ops = (Mir.Ops{
                 .reg1 = .rbp,
             }).encode(),
-            .data = undefined, // unused for push reg,
         });
         _ = try self.addInst(.{
             .tag = .mov,
@@ -389,23 +387,14 @@ fn gen(self: *Self) InnerError!void {
                 .reg1 = .rsp,
                 .reg2 = .rbp,
             }).encode(),
-            .data = undefined,
         });
         // We want to subtract the aligned stack frame size from rsp here, but we don't
         // yet know how big it will be, so we leave room for a 4-byte stack size.
         // TODO During semantic analysis, check if there are no function calls. If there
         // are none, here we can omit the part where we subtract and then add rsp.
-        const backpatch_stack_sub = try self.addInst(.{
-            .tag = .nop,
-            .ops = undefined,
-            .data = undefined,
-        });
+        const backpatch_stack_sub = try self.addInst(.{ .tag = .nop });
 
-        _ = try self.addInst(.{
-            .tag = .dbg_prologue_end,
-            .ops = undefined,
-            .data = undefined,
-        });
+        _ = try self.addInst(.{ .tag = .dbg_prologue_end });
 
         try self.genBody(self.air.getMainBody());
 
@@ -415,25 +404,16 @@ fn gen(self: *Self) InnerError!void {
             self.mir_instructions.items(.data)[jmp_reloc].inst = @intCast(u32, self.mir_instructions.len);
         }
 
-        _ = try self.addInst(.{
-            .tag = .dbg_epilogue_begin,
-            .ops = undefined,
-            .data = undefined,
-        });
+        _ = try self.addInst(.{ .tag = .dbg_epilogue_begin });
 
         // Maybe add rsp, x if required. This is backpatched later.
-        const backpatch_stack_add = try self.addInst(.{
-            .tag = .nop,
-            .ops = undefined,
-            .data = undefined,
-        });
+        const backpatch_stack_add = try self.addInst(.{ .tag = .nop });
 
         _ = try self.addInst(.{
             .tag = .pop,
             .ops = (Mir.Ops{
                 .reg1 = .rbp,
             }).encode(),
-            .data = undefined,
         });
 
         // calculate the data for callee_preserved_regs to be pushed and popped
@@ -463,7 +443,6 @@ fn gen(self: *Self) InnerError!void {
         // pop the callee_preserved_regs
         _ = try self.addInst(.{
             .tag = .pop_regs_from_callee_preserved_regs,
-            .ops = undefined,
             .data = .{ .regs_to_push_or_pop = callee_preserved_regs_push_data },
         });
         _ = try self.addInst(.{
@@ -471,7 +450,6 @@ fn gen(self: *Self) InnerError!void {
             .ops = (Mir.Ops{
                 .flags = 0b11,
             }).encode(),
-            .data = undefined,
         });
 
         // Adjust the stack
@@ -497,19 +475,11 @@ fn gen(self: *Self) InnerError!void {
             });
         }
     } else {
-        _ = try self.addInst(.{
-            .tag = .dbg_prologue_end,
-            .ops = undefined,
-            .data = undefined,
-        });
+        _ = try self.addInst(.{ .tag = .dbg_prologue_end });
 
         try self.genBody(self.air.getMainBody());
 
-        _ = try self.addInst(.{
-            .tag = .dbg_epilogue_begin,
-            .ops = undefined,
-            .data = undefined,
-        });
+        _ = try self.addInst(.{ .tag = .dbg_epilogue_begin });
     }
 
     // Drop them off at the rbrace.
@@ -519,7 +489,6 @@ fn gen(self: *Self) InnerError!void {
     });
     _ = try self.addInst(.{
         .tag = .dbg_line,
-        .ops = undefined,
         .data = .{ .payload = payload },
     });
 }
@@ -1610,7 +1579,6 @@ fn genBinMathOpMir(
                             .reg2 = dst_reg,
                             .flags = 0b11,
                         }).encode(),
-                        .data = undefined,
                     });
                 },
                 .immediate => |imm| {
@@ -1718,7 +1686,6 @@ fn genIMulOpMir(self: *Self, dst_ty: Type, dst_mcv: MCValue, src_mcv: MCValue) !
                             .reg1 = dst_reg,
                             .reg2 = src_reg,
                         }).encode(),
-                        .data = undefined,
                     });
                 },
                 .immediate => |imm| {
@@ -1767,7 +1734,6 @@ fn genIMulOpMir(self: *Self, dst_ty: Type, dst_mcv: MCValue, src_mcv: MCValue) !
                             .reg1 = dst_reg,
                             .reg2 = src_reg,
                         }).encode(),
-                        .data = undefined,
                     });
                     // copy dst_reg back out
                     return self.genSetStack(dst_ty, off, MCValue{ .register = dst_reg });
@@ -1807,7 +1773,6 @@ fn airArg(self: *Self, inst: Air.Inst.Index) !void {
     });
     _ = try self.addInst(.{
         .tag = .arg_dbg_info,
-        .ops = undefined,
         .data = .{ .payload = payload },
     });
     if (self.liveness.isUnused(inst))
@@ -1824,11 +1789,7 @@ fn airArg(self: *Self, inst: Air.Inst.Index) !void {
 }
 
 fn airBreakpoint(self: *Self) !void {
-    _ = try self.addInst(.{
-        .tag = .brk,
-        .ops = undefined,
-        .data = undefined,
-    });
+    _ = try self.addInst(.{ .tag = .brk });
     return self.finishAirBookkeeping();
 }
 
@@ -1962,14 +1923,12 @@ fn airCall(self: *Self, inst: Air.Inst.Index) !void {
                         .reg1 = .rax,
                         .flags = 0b01,
                     }).encode(),
-                    .data = undefined,
                 });
             } else if (func_value.castTag(.extern_fn)) |func_payload| {
                 const decl = func_payload.data;
                 const n_strx = try macho_file.addExternFn(mem.sliceTo(decl.name, 0));
                 _ = try self.addInst(.{
                     .tag = .call_extern,
-                    .ops = undefined,
                     .data = .{ .extern_fn = n_strx },
                 });
             } else {
@@ -2131,7 +2090,6 @@ fn airDbgStmt(self: *Self, inst: Air.Inst.Index) !void {
     });
     _ = try self.addInst(.{
         .tag = .dbg_line,
-        .ops = undefined,
         .data = .{ .payload = payload },
     });
     return self.finishAirBookkeeping();
@@ -2628,11 +2586,7 @@ fn airAsm(self: *Self, inst: Air.Inst.Index) !void {
             var iter = std.mem.tokenize(u8, asm_source, "\n\r");
             while (iter.next()) |ins| {
                 if (mem.eql(u8, ins, "syscall")) {
-                    _ = try self.addInst(.{
-                        .tag = .syscall,
-                        .ops = undefined,
-                        .data = undefined,
-                    });
+                    _ = try self.addInst(.{ .tag = .syscall });
                 } else if (mem.indexOf(u8, ins, "push")) |_| {
                     const arg = ins[4..];
                     if (mem.indexOf(u8, arg, "$")) |l| {
@@ -2655,7 +2609,6 @@ fn airAsm(self: *Self, inst: Air.Inst.Index) !void {
                             .ops = (Mir.Ops{
                                 .reg1 = reg,
                             }).encode(),
-                            .data = undefined,
                         });
                     } else return self.fail("TODO more push operands", .{});
                 } else if (mem.indexOf(u8, ins, "pop")) |_| {
@@ -2669,7 +2622,6 @@ fn airAsm(self: *Self, inst: Air.Inst.Index) !void {
                             .ops = (Mir.Ops{
                                 .reg1 = reg,
                             }).encode(),
-                            .data = undefined,
                         });
                     } else return self.fail("TODO more pop operands", .{});
                 } else {
@@ -2899,7 +2851,6 @@ fn genSetReg(self: *Self, ty: Type, reg: Register, mcv: MCValue) InnerError!void
                     .reg1 = reg,
                     .flags = flags,
                 }).encode(),
-                .data = undefined,
             });
         },
         .compare_flags_signed => |op| {
@@ -2916,7 +2867,6 @@ fn genSetReg(self: *Self, ty: Type, reg: Register, mcv: MCValue) InnerError!void
                         .reg1 = reg,
                         .reg2 = reg,
                     }).encode(),
-                    .data = undefined,
                 });
                 return;
             }
@@ -2970,7 +2920,6 @@ fn genSetReg(self: *Self, ty: Type, reg: Register, mcv: MCValue) InnerError!void
                     .reg2 = src_reg,
                     .flags = 0b11,
                 }).encode(),
-                .data = undefined,
             });
         },
         .memory => |x| {

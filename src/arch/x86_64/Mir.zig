@@ -27,17 +27,17 @@ pub const Inst = struct {
     /// reg1: Register
     /// reg2: Register
     /// flags: u2
-    ops: u16,
+    ops: u16 = undefined,
     /// The meaning of this depends on `tag` and `ops`.
-    data: Data,
+    data: Data = undefined,
 
     pub const Tag = enum(u16) {
         /// ops flags:  form:
-        ///       0b00  reg1, reg2
+        ///       0b00  reg2, reg1
         ///       0b00  reg1, imm32
-        ///       0b01  reg1, [reg2 + imm32]
+        ///       0b01  reg2, [reg1 + imm32]
         ///       0b01  reg1, [ds:imm32]
-        ///       0b10  [reg1 + imm32], reg2
+        ///       0b10  [reg2 + imm32], reg1
         ///       0b10  [reg1 + 0], imm32
         ///       0b11  [reg1 + imm32], imm32
         /// Notes:
@@ -45,7 +45,7 @@ pub const Inst = struct {
         ///  * When two imm32 values are required, Data field `payload` points at `ImmPair`.
         adc,
 
-        /// form: reg1, [reg2 + scale*rcx + imm32]
+        /// form: reg2, [reg1 + scale*rcx + imm32]
         /// ops flags  scale
         ///      0b00      1
         ///      0b01      2
@@ -53,7 +53,7 @@ pub const Inst = struct {
         ///      0b11      8
         adc_scale_src,
 
-        /// form: [reg1 + scale*rax + imm32], reg2
+        /// form: [reg2 + scale*rax + imm32], reg1
         /// form: [reg1 + scale*rax + 0], imm32
         /// ops flags  scale
         ///      0b00      1
@@ -152,11 +152,11 @@ pub const Inst = struct {
         idiv,
 
         /// ops flags:  form:
-        ///      0b00  reg1, reg2
-        ///      0b01  reg1, [reg2 + imm32]
+        ///      0b00  reg2, reg1
+        ///      0b01  reg2, [reg1 + imm32]
         ///      0b01  reg1, [imm32] if reg2 is none
-        ///      0b10  reg1, reg2, imm32
-        ///      0b11  reg1, [reg2 + imm32], imm32
+        ///      0b10  reg2, reg1, imm32
+        ///      0b11  reg2, [reg1 + imm32], imm32
         imul_complex,
 
         /// ops flags:  form:
@@ -232,11 +232,11 @@ pub const Inst = struct {
         syscall,
 
         /// ops flags:  form:
-        ///       0b00  reg1, reg2
+        ///       0b00  reg2, reg1
         ///       0b00  reg1, imm32
-        ///       0b01  reg1, [reg2 + imm32]
+        ///       0b01  reg2, [reg1 + imm32]
         ///       0b01  reg1, [ds:imm32]
-        ///       0b10  [reg1 + imm32], reg2
+        ///       0b10  [reg2 + imm32], reg1
         ///       0b10  [reg1 + 0], imm32
         ///       0b11  [reg1 + imm32], imm32
         /// Notes:
@@ -353,6 +353,9 @@ pub fn deinit(mir: *Mir, gpa: std.mem.Allocator) void {
     mir.* = undefined;
 }
 
+/// If both registers are defined, then reg2 is the destination
+/// register while reg1 is the source register. We follow the Intel
+/// syntax for asm hence reg2 <- reg1.
 pub const Ops = struct {
     reg1: Register = .none,
     reg2: Register = .none,
