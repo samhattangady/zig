@@ -366,6 +366,150 @@ pub fn addExtraAssumeCapacity(self: *Self, extra: anytype) u32 {
     return result;
 }
 
+fn mirPush(self: *Self, src_reg: Register) !Mir.Inst.Index {
+    return self.addInst(.{
+        .tag = .push,
+        .ops = (Mir.Ops{
+            .reg1 = src_reg,
+        }).encode(),
+    });
+}
+
+fn mirRetn(self: *Self, imm: ?i16) !Mir.Inst.Index {
+    var flags: u2 = 0b11;
+    var data: Mir.Inst.Data = undefined;
+    if (imm) |imm16| {
+        flags = 0b10;
+        data = .{ .imm = imm16 };
+    }
+    return self.addInst(.{
+        .tag = .ret,
+        .ops = (Mir.Ops{ .flags = flags }).encode(),
+        .data = data,
+    });
+}
+
+fn mirRetf(self: *Self, imm: ?i16) !Mir.Inst.Index {
+    var flags: u2 = 0b01;
+    var data: Mir.Inst.Data = undefined;
+    if (imm) |imm16| {
+        flags = 0b00;
+        data = .{ .imm = imm16 };
+    }
+    return self.addInst(.{
+        .tag = .ret,
+        .ops = (Mir.Ops{ .flags = flags }).encode(),
+        .data = data,
+    });
+}
+
+const MemOperand = struct {
+    reg: ?Register,
+    imm: i32,
+
+    fn reg_imm(reg: Register, imm32: i32) MemOperand {
+        return .{
+            .reg = reg,
+            .imm = imm32,
+        };
+    }
+
+    fn imm(imm32: i32) MemOperand {
+        return .{
+            .reg = null,
+            .imm = imm32,
+        };
+    }
+};
+
+const MirArg = union(enum) {
+    reg: Register,
+    imm: i32,
+    mem: MemOperand,
+
+    fn reg(register: Register) MirArg {
+        return .{ .reg = register };
+    }
+
+    fn imm(imm32: i32) MirArg {
+        return .{ .imm = imm32 };
+    }
+
+    fn mem(mem_op: MemOperand) MirArg {
+        return .{ .mem = mem_op };
+    }
+};
+
+fn mirMov(self: *Self, dst: MirArg, src: MirArg) !Mir.Inst.Index {
+    const tag: Mir.Inst.Tag = .mov;
+    switch (dst) {
+        .reg => |dst_reg| switch (src) {
+            .reg => |src_reg| return self.addInst(.{
+                .tag = tag,
+                .ops = (Mir.Ops{
+                    .reg1 = src_reg,
+                    .reg2 = dst_reg,
+                }).encode(),
+            }),
+            .imm => |imm32| return self.addInst(.{
+                .tag = tag,
+                .ops = (Mir.Ops{
+                    .reg1 = dst_reg,
+                }).encode(),
+                .data = .{ .imm = imm32 },
+            }),
+            .mem => |reg_imm| return self.addInst(.{
+                .tag = tag,
+                .ops = (Mir.Ops{
+                    .reg1 = if (reg_imm.reg) |src_reg| src_reg else dst_reg,
+                    .reg2 = if (reg_imm.reg != null) dst_reg else .none,
+                    .flags = 0b01,
+                }).encode(),
+                .data = .{ .imm = reg_imm.imm },
+            }),
+        },
+        .mem => |dst_reg_imm| switch (src) {
+            .reg => |src_reg| return self.addInst(.{
+                .tag = tag,
+                .ops = (Mir.Ops{
+                    .reg1 = src_reg,
+                    .reg2 = dst_reg_imm.reg.?,
+                    .flags = 0b10,
+                }).encode(),
+                .data = .{ .imm = dst_reg_imm.imm },
+            }),
+            .imm => |imm32| {
+                if (dst_reg_imm.imm == 0) {
+                    return self.addInst(.{
+                        .tag = tag,
+                        .ops = (Mir.Ops{
+                            .reg1 = dst_reg_imm.reg.?,
+                            .reg2 = .none,
+                            .flags = 0b10,
+                        }).encode(),
+                        .data = .{ .imm = imm32 },
+                    });
+                }
+                const payload = try self.addExtra(Mir.ImmPair{
+                    .dest_off = dst_reg_imm.imm,
+                    .operand = imm32,
+                });
+                return self.addInst(.{
+                    .tag = tag,
+                    .ops = (Mir.Ops{
+                        .reg1 = dst_reg_imm.reg.?,
+                        .reg2 = .none,
+                        .flags = 0b11,
+                    }).encode(),
+                    .data = .{ .payload = payload },
+                });
+            },
+            .mem => unreachable,
+        },
+        .imm => unreachable,
+    }
+}
+
 fn gen(self: *Self) InnerError!void {
     const cc = self.fn_type.fnCallingConvention();
     if (cc != .Naked) {
@@ -375,19 +519,9 @@ fn gen(self: *Self) InnerError!void {
             .data = .{ .regs_to_push_or_pop = undefined }, // to be backpatched
         });
 
-        _ = try self.addInst(.{
-            .tag = .push,
-            .ops = (Mir.Ops{
-                .reg1 = .rbp,
-            }).encode(),
-        });
-        _ = try self.addInst(.{
-            .tag = .mov,
-            .ops = (Mir.Ops{
-                .reg1 = .rsp,
-                .reg2 = .rbp,
-            }).encode(),
-        });
+        _ = try self.mirPush(.rbp);
+        _ = try self.mirMov(MirArg.reg(.rbp), MirArg.reg(.rsp));
+
         // We want to subtract the aligned stack frame size from rsp here, but we don't
         // yet know how big it will be, so we leave room for a 4-byte stack size.
         // TODO During semantic analysis, check if there are no function calls. If there
@@ -445,12 +579,7 @@ fn gen(self: *Self) InnerError!void {
             .tag = .pop_regs_from_callee_preserved_regs,
             .data = .{ .regs_to_push_or_pop = callee_preserved_regs_push_data },
         });
-        _ = try self.addInst(.{
-            .tag = .ret,
-            .ops = (Mir.Ops{
-                .flags = 0b11,
-            }).encode(),
-        });
+        _ = try self.mirRetn(null);
 
         // Adjust the stack
         const stack_end = self.max_end_stack;
@@ -2721,18 +2850,9 @@ fn genSetStack(self: *Self, ty: Type, stack_offset: u32, mcv: MCValue) InnerErro
                     // We have a positive stack offset value but we want a twos complement negative
                     // offset from rbp, which is at the top of the stack frame.
                     // mov    DWORD PTR [rbp+offset], immediate
-                    const payload = try self.addExtra(Mir.ImmPair{
-                        .dest_off = -@intCast(i32, adj_off),
-                        .operand = @bitCast(i32, @intCast(u32, x_big)),
-                    });
-                    _ = try self.addInst(.{
-                        .tag = .mov,
-                        .ops = (Mir.Ops{
-                            .reg1 = .rbp,
-                            .flags = 0b11,
-                        }).encode(),
-                        .data = .{ .payload = payload },
-                    });
+                    const dst_op = MemOperand.reg_imm(.rbp, -@intCast(i32, adj_off));
+                    const src_op = @bitCast(i32, @intCast(u32, x_big));
+                    _ = try self.mirMov(MirArg.mem(dst_op), MirArg.imm(src_op));
                 },
                 8 => {
                     // We have a positive stack offset value but we want a twos complement negative
@@ -2742,32 +2862,14 @@ fn genSetStack(self: *Self, ty: Type, stack_offset: u32, mcv: MCValue) InnerErro
                     // 64 bit write to memory would take two mov's anyways so we
                     // insted just use two 32 bit writes to avoid register allocation
                     {
-                        const payload = try self.addExtra(Mir.ImmPair{
-                            .dest_off = negative_offset + 4,
-                            .operand = @bitCast(i32, @truncate(u32, x_big >> 32)),
-                        });
-                        _ = try self.addInst(.{
-                            .tag = .mov,
-                            .ops = (Mir.Ops{
-                                .reg1 = .rbp,
-                                .flags = 0b11,
-                            }).encode(),
-                            .data = .{ .payload = payload },
-                        });
+                        const dst_op = MemOperand.reg_imm(.rbp, negative_offset + 4);
+                        const src_op = @bitCast(i32, @intCast(u32, x_big >> 32));
+                        _ = try self.mirMov(MirArg.mem(dst_op), MirArg.imm(src_op));
                     }
                     {
-                        const payload = try self.addExtra(Mir.ImmPair{
-                            .dest_off = negative_offset,
-                            .operand = @bitCast(i32, @truncate(u32, x_big)),
-                        });
-                        _ = try self.addInst(.{
-                            .tag = .mov,
-                            .ops = (Mir.Ops{
-                                .reg1 = .rbp,
-                                .flags = 0b11,
-                            }).encode(),
-                            .data = .{ .payload = payload },
-                        });
+                        const dst_op = MemOperand.reg_imm(.rbp, negative_offset);
+                        const src_op = @bitCast(i32, @truncate(u32, x_big));
+                        _ = try self.mirMov(MirArg.mem(dst_op), MirArg.imm(src_op));
                     }
                 },
                 else => {
@@ -2787,15 +2889,9 @@ fn genSetStack(self: *Self, ty: Type, stack_offset: u32, mcv: MCValue) InnerErro
             }
             const abi_size = ty.abiSize(self.target.*);
             const adj_off = stack_offset + abi_size;
-            _ = try self.addInst(.{
-                .tag = .mov,
-                .ops = (Mir.Ops{
-                    .reg1 = registerAlias(reg, @intCast(u32, abi_size)),
-                    .reg2 = .ebp,
-                    .flags = 0b10,
-                }).encode(),
-                .data = .{ .imm = -@intCast(i32, adj_off) },
-            });
+            const dst_op = MemOperand.reg_imm(.ebp, -@intCast(i32, adj_off));
+            const src_op = registerAlias(reg, @intCast(u32, abi_size));
+            _ = try self.mirMov(MirArg.mem(dst_op), MirArg.reg(src_op));
         },
         .memory => |vaddr| {
             _ = vaddr;
@@ -2872,13 +2968,7 @@ fn genSetReg(self: *Self, ty: Type, reg: Register, mcv: MCValue) InnerError!void
             }
             if (x <= math.maxInt(i32)) {
                 // Next best case: if we set the lower four bytes, the upper four will be zeroed.
-                _ = try self.addInst(.{
-                    .tag = .mov,
-                    .ops = (Mir.Ops{
-                        .reg1 = reg,
-                    }).encode(),
-                    .data = .{ .imm = @intCast(i32, x) },
-                });
+                _ = try self.mirMov(MirArg.reg(reg), MirArg.imm(@intCast(i32, x)));
                 return;
             }
             // Worst case: we need to load the 64-bit register with the IMM. GNU's assemblers calls
@@ -2912,15 +3002,7 @@ fn genSetReg(self: *Self, ty: Type, reg: Register, mcv: MCValue) InnerError!void
             // If the registers are the same, nothing to do.
             if (src_reg.id() == reg.id())
                 return;
-
-            _ = try self.addInst(.{
-                .tag = .mov,
-                .ops = (Mir.Ops{
-                    .reg1 = reg,
-                    .reg2 = src_reg,
-                    .flags = 0b11,
-                }).encode(),
-            });
+            _ = try self.mirMov(MirArg.reg(reg), MirArg.reg(src_reg));
         },
         .memory => |x| {
             // TODO can we move this entire logic into Emit.zig like with aarch64?
@@ -2935,25 +3017,12 @@ fn genSetReg(self: *Self, ty: Type, reg: Register, mcv: MCValue) InnerError!void
                     .data = .{ .got_entry = @intCast(u32, x) },
                 });
                 // MOV reg, [reg]
-                _ = try self.addInst(.{
-                    .tag = .mov,
-                    .ops = (Mir.Ops{
-                        .reg1 = reg,
-                        .reg2 = reg,
-                        .flags = 0b01,
-                    }).encode(),
-                    .data = .{ .imm = 0 },
-                });
+                const src_op = MemOperand.reg_imm(reg, 0);
+                _ = try self.mirMov(MirArg.reg(reg), MirArg.mem(src_op));
             } else if (x <= math.maxInt(i32)) {
                 // mov reg, [ds:imm32]
-                _ = try self.addInst(.{
-                    .tag = .mov,
-                    .ops = (Mir.Ops{
-                        .reg1 = reg,
-                        .flags = 0b01,
-                    }).encode(),
-                    .data = .{ .imm = @intCast(i32, x) },
-                });
+                const src_op = MemOperand.imm(@intCast(i32, x));
+                _ = try self.mirMov(MirArg.reg(reg), MirArg.mem(src_op));
             } else {
                 // If this is RAX, we can use a direct load.
                 // Otherwise, we need to load the address, then indirectly load the value.
@@ -2986,15 +3055,8 @@ fn genSetReg(self: *Self, ty: Type, reg: Register, mcv: MCValue) InnerError!void
                     // TODO: determine whether to allow other sized registers, and if so, handle them properly.
 
                     // mov reg, [reg + 0x0]
-                    _ = try self.addInst(.{
-                        .tag = .mov,
-                        .ops = (Mir.Ops{
-                            .reg1 = reg,
-                            .reg2 = reg,
-                            .flags = 0b01,
-                        }).encode(),
-                        .data = .{ .imm = 0 },
-                    });
+                    const src_op = MemOperand.reg_imm(reg, 0);
+                    _ = try self.mirMov(MirArg.reg(reg), MirArg.mem(src_op));
                 }
             }
         },
@@ -3005,15 +3067,8 @@ fn genSetReg(self: *Self, ty: Type, reg: Register, mcv: MCValue) InnerError!void
                 return self.fail("stack offset too large", .{});
             }
             const ioff = -@intCast(i32, off);
-            _ = try self.addInst(.{
-                .tag = .mov,
-                .ops = (Mir.Ops{
-                    .reg1 = registerAlias(reg, @intCast(u32, abi_size)),
-                    .reg2 = .ebp,
-                    .flags = 0b01,
-                }).encode(),
-                .data = .{ .imm = ioff },
-            });
+            const src_op = MemOperand.reg_imm(registerAlias(reg, @intCast(u32, abi_size)), ioff);
+            _ = try self.mirMov(MirArg.reg(.ebp), MirArg.mem(src_op));
         },
     }
 }
