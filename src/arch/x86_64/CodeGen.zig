@@ -403,44 +403,30 @@ fn mirRetf(self: *Self, imm: ?i16) !Mir.Inst.Index {
     });
 }
 
-const MemOperand = struct {
-    reg: ?Register,
-    imm: i32,
-
-    fn reg_imm(reg: Register, imm32: i32) MemOperand {
-        return .{
-            .reg = reg,
-            .imm = imm32,
-        };
-    }
-
-    fn imm(imm32: i32) MemOperand {
-        return .{
-            .reg = null,
-            .imm = imm32,
-        };
-    }
-};
-
-const MirArg = union(enum) {
+const MirOp = union(enum) {
     reg: Register,
     imm: i32,
-    mem: MemOperand,
+    mem: MemOp,
 
-    fn reg(register: Register) MirArg {
+    fn reg(register: Register) MirOp {
         return .{ .reg = register };
     }
 
-    fn imm(imm32: i32) MirArg {
+    fn imm(imm32: i32) MirOp {
         return .{ .imm = imm32 };
     }
 
-    fn mem(mem_op: MemOperand) MirArg {
-        return .{ .mem = mem_op };
+    fn mem(register: ?Register, imm32: i32) MirOp {
+        return .{
+            .mem = .{
+                .reg = register,
+                .imm = imm32,
+            },
+        };
     }
 };
 
-fn mirMov(self: *Self, dst: MirArg, src: MirArg) !Mir.Inst.Index {
+fn mirMov(self: *Self, dst: MirOp, src: MirOp) !Mir.Inst.Index {
     const tag: Mir.Inst.Tag = .mov;
     switch (dst) {
         .reg => |dst_reg| switch (src) {
@@ -510,6 +496,8 @@ fn mirMov(self: *Self, dst: MirArg, src: MirArg) !Mir.Inst.Index {
     }
 }
 
+// fn mirMovabs(self: *Self, dst_op: MirOp, src_op: MirOp) !Mir.Inst.Index {}
+
 fn gen(self: *Self) InnerError!void {
     const cc = self.fn_type.fnCallingConvention();
     if (cc != .Naked) {
@@ -520,7 +508,7 @@ fn gen(self: *Self) InnerError!void {
         });
 
         _ = try self.mirPush(.rbp);
-        _ = try self.mirMov(MirArg.reg(.rbp), MirArg.reg(.rsp));
+        _ = try self.mirMov(MirOp.reg(.rbp), MirOp.reg(.rsp));
 
         // We want to subtract the aligned stack frame size from rsp here, but we don't
         // yet know how big it will be, so we leave room for a 4-byte stack size.
@@ -2850,9 +2838,9 @@ fn genSetStack(self: *Self, ty: Type, stack_offset: u32, mcv: MCValue) InnerErro
                     // We have a positive stack offset value but we want a twos complement negative
                     // offset from rbp, which is at the top of the stack frame.
                     // mov    DWORD PTR [rbp+offset], immediate
-                    const dst_op = MemOperand.reg_imm(.rbp, -@intCast(i32, adj_off));
+                    const dst_op = MemOp.reg_imm(.rbp, -@intCast(i32, adj_off));
                     const src_op = @bitCast(i32, @intCast(u32, x_big));
-                    _ = try self.mirMov(MirArg.mem(dst_op), MirArg.imm(src_op));
+                    _ = try self.mirMov(MirOp.mem(dst_op), MirOp.imm(src_op));
                 },
                 8 => {
                     // We have a positive stack offset value but we want a twos complement negative
@@ -2862,14 +2850,14 @@ fn genSetStack(self: *Self, ty: Type, stack_offset: u32, mcv: MCValue) InnerErro
                     // 64 bit write to memory would take two mov's anyways so we
                     // insted just use two 32 bit writes to avoid register allocation
                     {
-                        const dst_op = MemOperand.reg_imm(.rbp, negative_offset + 4);
+                        const dst_op = MemOp.reg_imm(.rbp, negative_offset + 4);
                         const src_op = @bitCast(i32, @intCast(u32, x_big >> 32));
-                        _ = try self.mirMov(MirArg.mem(dst_op), MirArg.imm(src_op));
+                        _ = try self.mirMov(MirOp.mem(dst_op), MirOp.imm(src_op));
                     }
                     {
-                        const dst_op = MemOperand.reg_imm(.rbp, negative_offset);
+                        const dst_op = MemOp.reg_imm(.rbp, negative_offset);
                         const src_op = @bitCast(i32, @truncate(u32, x_big));
-                        _ = try self.mirMov(MirArg.mem(dst_op), MirArg.imm(src_op));
+                        _ = try self.mirMov(MirOp.mem(dst_op), MirOp.imm(src_op));
                     }
                 },
                 else => {
@@ -2889,9 +2877,9 @@ fn genSetStack(self: *Self, ty: Type, stack_offset: u32, mcv: MCValue) InnerErro
             }
             const abi_size = ty.abiSize(self.target.*);
             const adj_off = stack_offset + abi_size;
-            const dst_op = MemOperand.reg_imm(.ebp, -@intCast(i32, adj_off));
+            const dst_op = MemOp.reg_imm(.ebp, -@intCast(i32, adj_off));
             const src_op = registerAlias(reg, @intCast(u32, abi_size));
-            _ = try self.mirMov(MirArg.mem(dst_op), MirArg.reg(src_op));
+            _ = try self.mirMov(MirOp.mem(dst_op), MirOp.reg(src_op));
         },
         .memory => |vaddr| {
             _ = vaddr;
@@ -2968,7 +2956,7 @@ fn genSetReg(self: *Self, ty: Type, reg: Register, mcv: MCValue) InnerError!void
             }
             if (x <= math.maxInt(i32)) {
                 // Next best case: if we set the lower four bytes, the upper four will be zeroed.
-                _ = try self.mirMov(MirArg.reg(reg), MirArg.imm(@intCast(i32, x)));
+                _ = try self.mirMov(MirOp.reg(reg), MirOp.imm(@intCast(i32, x)));
                 return;
             }
             // Worst case: we need to load the 64-bit register with the IMM. GNU's assemblers calls
@@ -3002,7 +2990,7 @@ fn genSetReg(self: *Self, ty: Type, reg: Register, mcv: MCValue) InnerError!void
             // If the registers are the same, nothing to do.
             if (src_reg.id() == reg.id())
                 return;
-            _ = try self.mirMov(MirArg.reg(reg), MirArg.reg(src_reg));
+            _ = try self.mirMov(MirOp.reg(reg), MirOp.reg(src_reg));
         },
         .memory => |x| {
             // TODO can we move this entire logic into Emit.zig like with aarch64?
@@ -3017,12 +3005,12 @@ fn genSetReg(self: *Self, ty: Type, reg: Register, mcv: MCValue) InnerError!void
                     .data = .{ .got_entry = @intCast(u32, x) },
                 });
                 // MOV reg, [reg]
-                const src_op = MemOperand.reg_imm(reg, 0);
-                _ = try self.mirMov(MirArg.reg(reg), MirArg.mem(src_op));
+                const src_op = MemOp.reg_imm(reg, 0);
+                _ = try self.mirMov(MirOp.reg(reg), MirOp.mem(src_op));
             } else if (x <= math.maxInt(i32)) {
                 // mov reg, [ds:imm32]
-                const src_op = MemOperand.imm(@intCast(i32, x));
-                _ = try self.mirMov(MirArg.reg(reg), MirArg.mem(src_op));
+                const src_op = MemOp.imm(@intCast(i32, x));
+                _ = try self.mirMov(MirOp.reg(reg), MirOp.mem(src_op));
             } else {
                 // If this is RAX, we can use a direct load.
                 // Otherwise, we need to load the address, then indirectly load the value.
@@ -3055,8 +3043,8 @@ fn genSetReg(self: *Self, ty: Type, reg: Register, mcv: MCValue) InnerError!void
                     // TODO: determine whether to allow other sized registers, and if so, handle them properly.
 
                     // mov reg, [reg + 0x0]
-                    const src_op = MemOperand.reg_imm(reg, 0);
-                    _ = try self.mirMov(MirArg.reg(reg), MirArg.mem(src_op));
+                    const src_op = MemOp.reg_imm(reg, 0);
+                    _ = try self.mirMov(MirOp.reg(reg), MirOp.mem(src_op));
                 }
             }
         },
@@ -3067,8 +3055,9 @@ fn genSetReg(self: *Self, ty: Type, reg: Register, mcv: MCValue) InnerError!void
                 return self.fail("stack offset too large", .{});
             }
             const ioff = -@intCast(i32, off);
-            const src_op = MemOperand.reg_imm(registerAlias(reg, @intCast(u32, abi_size)), ioff);
-            _ = try self.mirMov(MirArg.reg(.ebp), MirArg.mem(src_op));
+            const src_reg = registerAlias(reg, @intCast(u32, abi_size));
+            const src_op = MemOp.reg_imm(src_reg, ioff);
+            _ = try self.mirMov(MirOp.reg(.ebp), MirOp.mem(src_op));
         },
     }
 }
